@@ -1,0 +1,1113 @@
+package irsn;
+
+import java.io.PrintWriter;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Scanner;
+import java.util.Set;
+import java.util.TreeMap;
+
+import org.apache.commons.lang3.StringUtils;
+import org.joda.time.Days;
+import org.joda.time.LocalDate;
+import org.joda.time.ReadablePartial;
+
+import naivebayesimplementation.NaiveBayesClassifier;
+
+import classifiers.NaiveBayes;
+import dataobjects.NaiveBayesKnowledgeBase;
+
+public class Query {
+	
+	static Connection conn653 = null;
+	static Connection conn = null;
+	static StopWords sWord=new StopWords();
+	static PorterStemmer pWord=new PorterStemmer();
+	static String query= null;
+	
+	static HashSet<String> stemQWord = new HashSet<String>();
+	static HashSet<String> stemVid = new HashSet<String>();
+	static HashMap<String , Double> ptmr = new HashMap<String , Double>();
+	static HashMap<String , Double> ytmr = new HashMap<String , Double>();
+	static HashMap<String , Double> rank = new HashMap<String , Double>();
+	static HashMap<String , String> rankTitle = new HashMap<String , String>();
+	static HashMap<String , String> rankURL = new HashMap<String , String>();
+	static NaiveBayesClassifier nbc;
+	static NaiveBayes nb;
+	static String querysAssignedTopic;
+	static int noScore=5; 
+	static int numOfRankings = 10;
+	public static void main(String[] args) throws Exception {
+ 
+	    Class.forName("com.mysql.jdbc.Driver");
+	    
+		conn653 = DriverManager.getConnection("jdbc:mysql://localhost:3306/cs653","root", "");
+		conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/wcf","root", "");
+    
+		Scanner reader = new Scanner(System.in);
+		  
+		boolean exit = false;
+		  
+	    //Implementing LDA Research
+	    nbc = new NaiveBayesClassifier();
+	    nbc.conn = conn653;
+	    	
+        Map<String, String[]> trainingExamples = new HashMap<>();
+        Map<String, Integer> assignedTopicCount = new TreeMap<>();
+        Map<String, List<String>> assignedTopics = new TreeMap<String, List<String>>();
+      
+        //Read Training Examples
+        nbc.ReadTrainingExamples(trainingExamples);
+        
+        //train classifier
+        nb = new NaiveBayes();
+        nb.setChisquareCriticalValue(6.63); //0.01 pvalue
+        nb.train(trainingExamples);
+        
+        //get trained classifier knowledgeBase
+        NaiveBayesKnowledgeBase knowledgeBase = nb.getKnowledgeBase();
+        
+	    //Use classifier
+	    nb = new NaiveBayes(knowledgeBase);
+	    
+	    
+		//END LDA
+		  
+		while(!exit){
+			  
+		  String pQuery = null;
+		  query= null;
+		  stemQWord.clear();
+		  stemVid.clear();
+		  ptmr.clear();
+		  ytmr.clear();
+		  rank.clear();
+		  rankTitle.clear(); 
+		  rankURL.clear(); 
+			  
+			  
+		  System.out.println(); 
+	      System.out.print("Enter a query or x to exit: ");
+		  query = reader.nextLine().toLowerCase();
+		  
+		  if(query.equals("x")) {
+		  System.out.println("Exit query!!");
+			  exit=true;
+		  }
+		  
+		  else{ 
+			  
+			  pQuery = query.replaceAll("[^0-9a-zA-Z ]", "").trim();
+			  String[] getWord = pQuery.split(" ");
+		   
+			  processQueryWord(getWord);  
+		  
+			  
+			  // Clean query
+    		  String cleanQuery = nbc.GetCleanQuery(pQuery);
+    		  querysAssignedTopic = nb.predict(cleanQuery);
+		  				  
+    		  			  
+    		  if (getTitleTag() == 0)/*loadAllRelevantVideos()*/ {
+    			  
+    			  System.out.println("No result for " + query);
+    		  }
+    			  
+			  else{					    		  
+		    		  getWCFtitle();// Calculates the scores for the title and tags for each vid
+		    		  // Adds the rest of the scores and ranks the videos
+		    		  getRank();
+		      }
+	    		  
+    	  }
+	   }
+		  
+	   safeClose(conn);
+	   safeClose(conn653); 
+	   
+	}//main()
+		
+		
+	/* getAllRelevantVideos
+	 * 
+	 * Returns a list of videos IDs that were assigned
+	 * as the same topic as the query.
+	 */
+	private static boolean loadAllRelevantVideos() {
+		
+		// Get all the scores of a particular topic
+		Map<String, Double> videoScoresOnTopic = nbc.GetVideoScoresForTopic(nb, querysAssignedTopic);
+	
+		// Keep only the videos that scored a 1. This means that the query's topic
+		// and the video's assigned topic are the same.
+		Iterator<Map.Entry<String, Double>> iter = videoScoresOnTopic.entrySet().iterator();
+        
+        //loop through all the categories and training examples
+        while(iter.hasNext()) {
+            Map.Entry<String, Double> entry = iter.next();
+            String vidId = entry.getKey();
+            Double score = entry.getValue();
+            
+            if(score == 1) {
+            	stemVid.add(vidId);
+            }
+        }
+        
+        if(stemVid.size() == 0)
+        	return false;
+        else
+        	return true;
+		
+	}
+	
+	private static void processQueryWord(String[] getWord) {
+		
+		for(int i=0; i<getWord.length ; i++){
+			
+			String temp;
+			if(StringUtils.isNumeric(getWord[i])){ temp = getWord[i]; }
+        	else{ temp = rStemStop(getWord[i]); }
+			
+			if(temp != null){
+				stemQWord .add(temp);		
+				//System.out.println("stem string: "+temp);
+			}
+		}	
+	}//processQuery()
+
+
+	private static String rStemStop(String getString) {
+		
+		//System.out.println("stem string: "+getString);
+		
+		String pStr= getString.toLowerCase();
+	    	if(!sWord.contains(pStr))
+	    	{
+	        	pStr=pWord.stem(pStr);
+	    		if(!pStr.contentEquals("Invalid term") && !pStr.contentEquals("No term entered"))
+	    		{
+	    			//System.out.println(pStr);
+	    			return pStr;
+	    		}
+	    	}
+	    	
+	    	return null;
+	}//rStemStop()
+	
+	private static int getTitleTag() throws Exception {
+		
+		for (String word : stemQWord){ 
+		   // System.out.println("stem words:  "+ word);
+		    getStemTitle(word);
+		    getStemTag(word);
+	   }
+		
+		if (stemVid.isEmpty()) return 0;
+		else return 1;
+	//  System.out.println("vid title:  "+ stemVid);
+	//  System.out.println();
+
+	}//getTitleTag()
+
+	
+	private static void getStemTag(String word) throws Exception {
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		
+		try{
+			String query ="SELECT vid FROM stemtags where tag= ?";
+			stmt = conn653.prepareStatement(query);
+			stmt.setString(1, word);
+		
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				//System.out.println(rs.getString(1));
+				stemVid.add(rs.getString(1));
+			}
+		}
+		finally {
+			safeClose(rs);
+			safeClose(stmt);
+		}		
+	}//getStemTag
+
+
+	private static void getStemTitle(String word) throws Exception {
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		
+		try{
+			String query ="SELECT vid FROM stemtitle where title= ?";
+			stmt = conn653.prepareStatement(query);
+			stmt.setString(1, word);
+		
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				//System.out.println(rs.getString(1));
+				stemVid.add(rs.getString(1));
+			}
+		}
+		
+		finally {	
+			safeClose(rs);
+			safeClose(stmt);
+		}
+	}//getStemTitle()
+	
+	
+	private static void getWCFtitle() throws Exception {
+		
+		for (String vid : stemVid){ 
+			
+			HashSet<String> tempTitle = new HashSet<String>();
+			HashSet<String> tempTag = new HashSet<String>();
+			double sumTitle=0, countTitle=0 , sumTag=0, countTag=0;
+			tempTitle = getTitleVid(vid); 
+			tempTag = getTagVid(vid);
+			
+			//System.out.println("----------------------------------------");
+			//System.out.println("Select title: "+vid +": " +tempTitle);
+			//System.out.println("Select tags: "+vid +": " +tempTag);
+			
+			 for (String word : stemQWord){ 
+			
+				 double[] getemp= titleWCF(word, tempTitle);
+				 sumTitle += getemp[0];
+					 countTitle+=getemp[1]; 
+				
+				 
+				 double[] getempTag = tagWCF(word, tempTag); 
+					 sumTag += getempTag[0];
+					 countTag+=getempTag[1];					 
+			 }
+		    
+			 sumTitle = sumTitle/(stemQWord.size()*tempTitle.size());
+			 sumTitle = sumTitle/(stemQWord.size()*countTitle);
+			 sumTag = sumTag/(stemQWord.size()*countTag);
+			 //System.out.println("Nor sumTitle: "+sumTitle);
+			
+			 if (Double.isNaN(sumTitle)) sumTitle=0.0;
+			 if (Double.isNaN(sumTag)) sumTag=0.0;
+				
+			 ptmr.put(vid, sumTitle);
+			 ytmr.put(vid, sumTag);
+	   }
+		 //System.out.println(ptmr);
+		 //System.out.println(ytmr);
+		 
+		 normalTitle();
+		 normalTag();
+		 
+		 //System.out.println();
+		 //System.out.println(ptmr);
+		 //System.out.println(ytmr);
+	}//getWCFTitle
+
+
+
+	private static HashSet<String> getTitleVid(String vid) throws Exception {
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		HashSet<String> tempTitle = new HashSet<String>();
+		
+		try{
+			String query ="SELECT title FROM stemtitle where vid= ?";
+			stmt = conn653.prepareStatement(query);
+			stmt.setString(1, vid);
+		
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				//System.out.println(rs.getString(1));
+				tempTitle.add(rs.getString(1));
+			}
+			
+			return tempTitle;
+		}
+		
+		finally {
+			safeClose(rs);
+			safeClose(stmt);
+		}
+	}//getTitleVid()
+	
+	
+	
+  private static HashSet<String> getTagVid(String vid) throws Exception {
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		HashSet<String> tempTag = new HashSet<String>();
+		
+		try{
+			String query ="SELECT tag FROM stemtags where vid= ?";
+			stmt = conn653.prepareStatement(query);
+			stmt.setString(1, vid);
+		
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				//System.out.println(rs.getString(1));
+				tempTag.add(rs.getString(1));
+			}
+			
+			return tempTag;
+		
+		}
+		
+		finally {
+		
+			safeClose(rs);
+			safeClose(stmt);
+		}
+		
+	}
+  
+  
+  	private static double[] titleWCF(String word, HashSet<String> tempTitle) throws Exception {
+		
+  		//System.out.println("inside titleWCF: "+word + " : " +tempTitle );
+		double[] sum= new double[2];
+		double temp=0;
+		for (String title : tempTitle){ 
+			if (StringUtils.isNumeric(word) & StringUtils.isNumeric(title)){
+				double qWord = Double.parseDouble(word);
+				double tWord = Double.parseDouble(title);
+				if (qWord==tWord) 
+					sum[0]+=temp; 
+		
+				sum[1]++;
+			}
+			else if(StringUtils.isNumeric(word) & ! StringUtils.isNumeric(title)){
+				sum[1]++;	
+			}
+			else{
+				temp = getWCF(word,title);
+				if(temp != 0){
+					  sum[0]+=temp; 
+				 }
+				 sum[1]++;
+			}
+			//System.out.println(title);
+		 }
+	
+		return sum;
+	}//titleWCF()
+	
+
+	private static double[] tagWCF(String word, HashSet<String> tempTag) throws Exception {
+		
+		double sum[] = new double[2];
+		double temp = 0;
+		for (String tag : tempTag){ 
+			if (StringUtils.isNumeric(word) & StringUtils.isNumeric(tag)){
+				double qWord = Double.parseDouble(word);
+				double tWord = Double.parseDouble(tag);
+				if (qWord==tWord) 
+					sum[0]+=temp; 
+		
+				sum[1]++;
+			}
+			else if(StringUtils.isNumeric(word) & ! StringUtils.isNumeric(tag)){
+				sum[1]++;	
+			}
+			else{
+			 temp=getWCF(word,tag);
+			 if(temp != 0){
+				  sum[0]+=temp;
+			 }
+			  sum[1]++;
+			}
+		 }
+	
+		return sum;
+	}//tagWCF()
+
+	
+	private static double getWCF(String word, String simword) throws SQLException{
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		double wcf=0;
+		try{
+			String query ="SELECT cor FROM correlation where word =? and simword=?";
+			stmt = conn.prepareStatement(query);
+			stmt.setString(1, word);
+			stmt.setString(2, simword);
+			
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				
+				wcf = rs.getFloat(1);
+				//System.out.println("wcf: " +wcf);
+			}
+		return wcf;
+		
+		}
+		
+		finally {
+		
+			safeClose(rs);
+			safeClose(stmt);
+		}
+		
+	}//getSelect()
+
+	private static void normalTitle() {
+		
+	    double maxValue = Collections.max(ptmr.values());
+	    double minValue = Collections.min(ptmr.values());
+	    double norPTMR= maxValue-minValue;
+	   //System.out.println("Max: " + maxValue + " Min: " + minValue);
+	    
+	    for ( Map.Entry<String, Double> entry : ptmr.entrySet()) {
+		    double nPTMR = entry.getValue();
+		    nPTMR = (nPTMR-minValue) / norPTMR;
+		    //System.out.println("nPTMR: " + nPTMR);
+		    ptmr.put(entry.getKey(), nPTMR);
+		}
+		
+	}//normalTitleTag()
+
+
+	private static void normalTag() {
+		
+		double maxValue = Collections.max(ytmr.values());
+	    double minValue = Collections.min(ytmr.values());
+	    double norYTMR= maxValue-minValue;
+	   //System.out.println("Max: " + maxValue + " Min: " + minValue);
+	    
+	    for ( Map.Entry<String, Double> entry : ytmr.entrySet()) {
+		    double nYTMR = entry.getValue();
+		    nYTMR = (nYTMR-minValue) / norYTMR;
+		    //System.out.println("nPTMR: " + nPTMR);
+		    ytmr.put(entry.getKey(), nYTMR);
+		}
+			
+	}//normalTag()
+
+
+	 
+	private static void getRank() throws Exception {
+		
+		
+		Map<String, List<Double>> relevantVidScores = getAllRelevantVidScores();
+		/*// Testing to see if the scores are what they should be for the title
+		Set<String> vidIDs = relevantVidScores.keySet();
+		for (String id : vidIDs){
+			
+			List<Double> allScores = relevantVidScores.get(id);
+			
+			if (id.equals("q0P-XP_8k0k"))
+			{
+				int stop = 0;
+				stop++;
+			}
+			System.out.println(id + ": " + allScores.get(0));
+		}
+		*/
+		
+		// title
+		List<String> topRankedVidsOnTitle = GetTopTenVidsOnFeature(relevantVidScores, 0);
+		
+		// tags
+		List<String> topRankedVidsOnTags = GetTopTenVidsOnFeature(relevantVidScores, 1);
+		
+		// view count
+		List<String> topRankedVidsOnViewCount = new ArrayList<String>();//GetTopTenVidsOnFeature(relevantVidScores, 2);
+		
+		// like count
+		List<String> topRankedVidsOnLikeCount = new ArrayList<String>(); //GetTopTenVidsOnFeature(relevantVidScores, 3);
+		
+		// senti count
+		List<String> topRankedVidsOnSentiCount = new ArrayList<String>();// GetTopTenVidsOnFeature(relevantVidScores, 4);
+		
+		// nPost date
+		List<String> topRankedVidsOnNPostDate = new ArrayList<String>(); // GetTopTenVidsOnFeature(relevantVidScores, 5);
+		
+		// View Count AND NPost Date
+		List<String> topRankedVidsOnViewCountAndPostDate = GetTopTenPViewCount(relevantVidScores);
+		
+		// relevant videos
+		List<String> topRankedRelevantVids = GetTopTenMostRelevantVideos(relevantVidScores);
+		
+		// Combine all the videos
+		List<String> allTopVids = new ArrayList<String>();
+		allTopVids.addAll(topRankedVidsOnTitle);
+		allTopVids.addAll(topRankedVidsOnTags);
+		allTopVids.addAll(topRankedVidsOnViewCount);
+		allTopVids.addAll(topRankedVidsOnLikeCount);
+		allTopVids.addAll(topRankedVidsOnSentiCount);
+		allTopVids.addAll(topRankedVidsOnNPostDate);
+		allTopVids.addAll(topRankedVidsOnViewCountAndPostDate);
+		allTopVids.addAll(topRankedRelevantVids);
+		
+		// Remove duplicates of the videos (changes order of elements)
+		Set<String> setWithNoDuplicates = new HashSet<>();
+		setWithNoDuplicates.addAll(allTopVids);
+		allTopVids.clear();
+		allTopVids.addAll(setWithNoDuplicates);
+		
+		// Calculate Scores on top videos based on Rank
+		for (String vid : allTopVids){ 
+			calCombMNZScoreBasedOnRank(vid, relevantVidScores, topRankedVidsOnTitle, topRankedVidsOnTags, topRankedVidsOnViewCount,
+					topRankedVidsOnLikeCount, topRankedVidsOnSentiCount, topRankedVidsOnNPostDate, topRankedVidsOnViewCountAndPostDate, topRankedRelevantVids);	
+		}
+		
+		//System.out.println(rank);
+		sortRanking();
+		
+	}//getRank()
+	
+	/* GetTopTenVidsOnFeature
+	 * 
+	 * features:
+	 * 
+	 * 0 : title
+	 * 1 : tags
+	 * 2 : nViewCount
+	 * 3 : likeCount
+	 * 4 : sentiCount
+	 * 5 : nPostDate
+	 * 
+	 */
+	
+	private static List<String> GetTopTenVidsOnFeature(Map<String, List<Double>> relevantVidScores, int feature) {
+		
+		List<String> topTenVids = new ArrayList<String>();
+		Map<String, Double> oneFeatureScoresForVids = new HashMap<String, Double>();
+		
+		// Store into new Map where we only store the score of the feature we care about
+		for (String vid : relevantVidScores.keySet()){
+			Double scoreForFeature = relevantVidScores.get(vid).get(feature);
+			oneFeatureScoresForVids.put(vid, scoreForFeature);
+		}
+		
+		topTenVids = GetTopTenVids(oneFeatureScoresForVids);
+		
+		return topTenVids;
+		
+	}
+	
+	private static List<String> GetTopTenMostRelevantVideos(Map<String, List<Double>> relevantVidScores) {
+		Map<String, Double> oneFeatureScoresForVids = new HashMap<String, Double>();
+		
+		
+		// Puts all the videos with its relevance score in oneFeaureScoresForVids 
+		for (String vid : relevantVidScores.keySet()){
+			Double nbScore = nbc.GetVideoScoreForTopic(nb, querysAssignedTopic, vid);
+			oneFeatureScoresForVids.put(vid, nbScore);
+		}
+		
+		List<String> topTenVids = GetTopTenVids(oneFeatureScoresForVids);
+		
+		return topTenVids;
+	}
+	
+	/* GetTopTenPViewCount
+	 * 
+	 * We combine the values of viewCount and nPostDate.
+	 * We try to balance out the fact that older videos 
+	 * may have more likes because they have been there 
+	 * longer.
+	 * 
+	 * features:
+	 * 
+	 * 0 : title
+	 * 1 : tags
+	 * 2 : nViewCount
+	 * 3 : likeCount
+	 * 4 : sentiCount
+	 * 5 : nPostDate
+	 * 
+	 */
+	private static List<String> GetTopTenPViewCount(Map<String, List<Double>> relevantVidScores) {
+		
+		Map<String, Double> oneFeatureScoresForVids = new HashMap<String, Double>();
+		
+		// Get Present Date
+		LocalDate presentDate = LocalDate.parse("2016-06-03");
+		
+		// For each of the relevant videos
+		for (String vid : relevantVidScores.keySet()){
+			
+			PreparedStatement stmt = null;
+			ResultSet rs = null;
+			String getTitle=null;
+			String getThumb =null;
+			Double viewCount = 0.0;
+			LocalDate postDate = null;
+
+			try{
+				
+				String query ="SELECT viewCount, postDate from videos where vid = ?";
+				
+				stmt = conn653.prepareStatement(query);
+				
+				stmt.setString(1, vid);
+		
+				rs = stmt.executeQuery();
+				
+				// I get the view count and the post date
+				while(rs.next()){
+				viewCount = rs.getDouble(1);
+				postDate = LocalDate.parse(rs.getString(2));
+				}
+					
+			} catch (SQLException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+			
+			finally {
+				safeClose(rs);
+				safeClose(stmt);
+			}
+			
+			int NumOfDaysBetweenPostDateAndToday = Days.daysBetween(postDate, presentDate).getDays();
+			
+			Double combinedScore = viewCount / (double) NumOfDaysBetweenPostDateAndToday;
+			oneFeatureScoresForVids.put(vid, combinedScore);
+		}
+		
+		return GetTopTenVids(oneFeatureScoresForVids);
+	}
+	
+	private static List<String> GetTopTenVids(Map<String, Double> featureScores) {
+		
+		List<String> topRankedVids = new ArrayList<String> ();
+		
+		// Get all the values in the one feature scores map
+		List<Double> scoresOnFeature = new ArrayList<Double>(featureScores.values());
+		
+		// Sort the list of all the scores
+		Collections.sort(scoresOnFeature);
+		
+		if(scoresOnFeature.size() >= numOfRankings) {
+			// Get the top ten scores
+			scoresOnFeature = scoresOnFeature.subList(scoresOnFeature.size() - numOfRankings, scoresOnFeature.size());
+		}
+		else {
+			// Get the top ten scores
+			scoresOnFeature = scoresOnFeature.subList(0, scoresOnFeature.size());
+		}
+		
+		
+		// for each of the top 10 scores....
+		for(Double score : scoresOnFeature) {
+			
+			for (String vid : featureScores.keySet()){
+				// Find the first video that has that score...
+				if(featureScores.get(vid) == score) {
+					// Add it to the top ten vid list
+					topRankedVids.add(vid);
+					
+					// Then remove it from the map in case there are repeats of scores
+					featureScores.remove(vid);
+					break;
+				}
+			}
+		}
+		
+		return topRankedVids;
+	}
+	
+	private static Map<String, List<Double>> getAllRelevantVidScores() {
+		
+		Map<String, List<Double>> relevantVidScores = new HashMap<String, List<Double>>();
+		
+		try {
+			
+			for (String vid : stemVid){ 
+				
+				List<Double>allScoresForVid = new ArrayList<Double>();
+				double tptmr = ptmr.get(vid);
+				double tytmr = ytmr.get(vid);
+				double[] scores = getPreProScorce(vid);
+				
+				//title
+				allScoresForVid.add(tptmr);
+				//tags
+				allScoresForVid.add(tytmr);
+				//nViewCount
+				allScoresForVid.add(scores[0]);
+				//likeCount
+				allScoresForVid.add(scores[1]);
+				//sentiCount
+				allScoresForVid.add(scores[2]);
+				//nPostDate
+				allScoresForVid.add(scores[3]);
+				
+				relevantVidScores.put(vid, allScoresForVid);
+					
+				
+			}
+		
+		} catch (Exception e) {
+			
+			e.printStackTrace();
+		}
+		
+		return relevantVidScores;
+	}
+
+	private static void calCombMNZScoreBasedOnRank(String vid, Map<String, List<Double>> relevantVidScores, List<String> topTitleVids, List<String> topTagVids, List<String> topViewCountVids,
+			List<String> topLikeCountVids, List<String> topSentiCountVids, List<String>topNPostDateVids, List<String> topTenVidsOnViewCountAndPostDate, List<String> topRelevantVids) throws Exception {
+		
+		double totScore = 0;
+		int count = 0;
+		
+		if (vid.equals("CIl_x2PvbRw")) {
+			
+			int num = 0;
+			num++;
+		}
+		
+		// Rank is listed from min to max. Therefore the higher it scored, the higher the index number.
+		
+		int rank0 = GetRankingScoreOfFeature(vid, 0, topTitleVids, relevantVidScores);
+		int rank1 = GetRankingScoreOfFeature(vid, 1, topTagVids, relevantVidScores);
+		//int rank2 = GetRankingScoreOfFeature(vid, 2, topViewCountVids, relevantVidScores);
+		//int rank3 = GetRankingScoreOfFeature(vid, 3, topLikeCountVids, relevantVidScores);
+		//int rank4 = GetRankingScoreOfFeature(vid, 4, topSentiCountVids, relevantVidScores);
+		//int rank5 = GetRankingScoreOfFeature(vid, 5, topNPostDateVids, relevantVidScores);
+		int vsAndpdRank = topTenVidsOnViewCountAndPostDate.indexOf(vid);
+		int relevanceRank = topRelevantVids.indexOf(vid);
+		
+		
+		if (rank0 != -1) { totScore += rank0; count++; }
+		if (rank1 != -1) { totScore += rank1; count++; }
+		//if (rank2 != -1) { totScore += rank2; count++; }
+		//if (rank3 != -1) { totScore += rank3; count++; }
+		//if (rank4 != -1) { totScore += rank4; count++; }
+		//if (rank5 != -1) { totScore += rank5; count++; }
+		if (vsAndpdRank != -1) { totScore += vsAndpdRank; count++; }
+		
+		// Multiply the total rank score by the number of features it contains scores > 0 for.
+		
+		double newTotScore = totScore * count;
+		
+		rank.put(vid, newTotScore);
+		 
+	}//calCombMNZScore()
+	
+	private static int GetRankingScoreOfFeature(String vid, int feature, List<String> TopVids, 
+			Map<String, List<Double>> relevantVidScores) {
+		
+		if(TopVids.contains(vid)) {
+			
+			double vidScore = relevantVidScores.get(vid).get(feature);
+			
+			if(vidScore != 0) {
+				// index + 1 gives the rank score. 
+				int rankScore = TopVids.indexOf(vid) + 1; 
+				
+				// add rank score to totScore
+				return rankScore;
+			}
+		}
+		// return -1 if the vid was not in the rank OR if it was, but had a feature Score of 0
+		return -1;
+	}
+	
+
+
+	private static void calCombMNZScore(String vid) throws Exception {
+		
+		double[] getScore = getPreProScorce(vid);
+		double tptmr =0, tytmr=0, calRank=0;
+		double count=0;
+		
+		double PTRMweight = 1;
+			
+		tptmr = ptmr.get(vid);
+		tytmr = ytmr.get(vid);
+		
+		//System.out.println("------------Ranking----------------");
+		//System.out.println("Vid: "+vid);
+		//System.out.println(ptmr);
+		//System.out.println(tptmr);
+		System.out.println(getDescription(vid));
+		
+			if(tptmr !=0.0){
+				calRank += (PTRMweight*tptmr);
+				System.out.println("PTMR (title): "+PTRMweight*tptmr);
+				count++;
+			}
+			
+			if(tytmr !=0.0){
+				calRank +=tytmr;
+				System.out.println("YTMR (tag): "+tytmr);
+				count++;
+			}
+			
+			//System.out.println(" All of the Scores: -------");
+			for(int x=0; x < getScore.length ;x++){
+				if(getScore[x] !=0.0){
+					System.out.println("score: " + x + ": " + getScore[x]);
+					calRank += getScore[x];
+					//System.out.println("other: "+getScore[x]);
+					count++;
+				}
+			}
+			
+			Double nbScore = nbc.GetVideoScoreForTopic(nb, querysAssignedTopic, vid);
+			System.out.println("topic score: " + nbScore);
+			count++;
+			calRank += nbScore;
+			
+		//System.out.println("Before Score: " + calRank);
+		
+		calRank = calRank*count;
+		rank.put(vid, calRank);
+		
+		System.out.println("vid Score: " + calRank + "\n");
+		 
+	}//calCombMNZScore()
+
+	private static double[] getPreProScorce(String vid) throws Exception{
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		String getTitle=null;
+		String getThumb =null;
+		double [] score = new double[4] ;
+
+		try{
+			String query ="SELECT title, nViewCount, likeCount, sentiCount, thumburl ,nPostDate from videos where vid = ?";
+			stmt = conn653.prepareStatement(query);
+			stmt.setString(1, vid);
+	
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				getTitle= rs.getString(1);
+				score[0] = rs.getDouble(2);
+				score[1] = rs.getDouble(3);
+				score[2] = rs.getDouble(4);
+				getThumb= rs.getString(5);
+				score[3]= rs.getDouble(6);
+				
+				rankTitle.put(vid, getTitle);
+				rankURL.put(vid, getThumb);
+			}
+			
+			//System.out.println(rankURL);
+		return score;
+		}
+		
+		finally {
+			safeClose(rs);
+			safeClose(stmt);
+		}
+	}//getSelect()
+	
+	
+	private static void sortRanking() throws Exception {
+			
+	   PrintWriter writer = new PrintWriter("rankOutput.html","UTF8");
+	   writer.println("<h2>IRSN- Search Enigne for LDS Videos </h2> <p>");
+	   writer.println("<h3>Query: "+query+"</h3><p>");
+	   ValueComparator bvc =  new ValueComparator(rank);
+	   TreeMap<String,Double> sorted_map = new TreeMap<String,Double>(bvc);
+	   sorted_map.putAll(rank);
+	   
+	   
+	   Map<String, List<Double>> relevantVidScores = getAllRelevantVidScores();
+		// Testing to see if the scores are what they should be for the title
+//		Set<String> vidIDs = relevantVidScores.keySet();
+//		for (String id : vidIDs){
+//			
+//			List<Double> allScores = relevantVidScores.get(id);
+//			
+//			if (id.equals("q0P-XP_8k0k"))
+//			{
+//				int stop = 0;
+//				stop++;
+//			}
+//			System.out.println(id + ": " + allScores.get(0));
+//		}
+		
+		
+	   // System.out.println("======================");
+	   int count=1;
+	   for(Entry<String, Double> entry : sorted_map.entrySet()) 
+		 {
+		   	  String vid = entry.getKey();
+			  Double score = entry.getValue();	  
+			  String title = rankTitle.get(vid);
+			  System.out.println(vid +  ": " + score +": "+title );
+			  
+			  String description = getDescription(vid);
+			 
+			  String html = ""
+			  		+ "<table width = '800px height='100%' align'left' cellpadding='5'>"
+			  		+ "<tr>"
+			  		+ "<td width='20px'>"
+			  		+ "("+ count+")</br>"
+			  		+ "</td>"
+			  		+ "<td width='120px'>"
+			  		+ "<img src=' "+rankURL.get(vid) + "' height:90';>"
+			  		+ "</td>"
+			  		+ "<td>"
+			  		+ " <a href= 'https://www.youtube.com/watch?v=" +vid+ "/'>"+title+"</a> </br>"
+			  		+ description+" " + getTagVid(vid) +  " tag score: " + relevantVidScores.get(vid).get(1) + "</br>"
+			  		+ " </td> </tr></table>";
+			  writer.println(html);
+			  count++;
+			  
+			  // Only Show up to Top 10 Videos
+			  if(count == numOfRankings + 1)
+				  break;
+		 }
+	   
+	   writer.close();
+		
+	}//sortRanking()
+
+    private static String getDescription(String vid) throws SQLException {
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		String description = null;
+		
+		try{
+			String query ="SELECT description FROM videos where vid= ?";
+			stmt = conn653.prepareStatement(query);
+			stmt.setString(1, vid);
+		
+			rs = stmt.executeQuery();
+			
+			if(rs.next()){
+				//System.out.println(rs.getString(1));
+				description = rs.getString(1);
+			}
+			
+			//return getShortenedDescription(description);
+			return description;
+		}
+		
+		finally {
+		
+			safeClose(rs);
+			safeClose(stmt);
+		}
+	}
+    
+    private static String getShortenedDescription(String description) {
+    	StringBuilder shortDescription = new StringBuilder();
+    	
+    	if (description == null)
+    		return "";
+    	if (description.length() <= 300)
+    		return description;
+    	
+    	return description.substring(0, 299) + "...";
+    	
+    }
+
+    private static HashSet<String> getUnProcessTagVid(String vid) throws SQLException {
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		HashSet<String> tempTag = new HashSet<String>();
+		
+		try{
+			String query ="SELECT tag FROM tags where vid= ?";
+			stmt = conn653.prepareStatement(query);
+			stmt.setString(1, vid);
+		
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				System.out.println(rs.getString(1));
+				tempTag.add(rs.getString(1));
+			}
+			
+			return tempTag;
+		
+		}
+		
+		finally {
+		
+			safeClose(rs);
+			safeClose(stmt);
+		}
+	}
+
+	
+	private static void safeClose(Connection con) {
+		if (con != null) {
+			try {	con.close();}
+			catch (SQLException e) {
+				// ...
+			}
+		}
+	}
+	
+	private static void safeClose(Statement st) {
+		if (st != null) {
+			try {	st.close();	}
+			catch (SQLException e) {
+				// ...
+			}
+		}
+	}
+	
+	private static void safeClose (PreparedStatement cps) {
+		if (cps != null) {
+			try {	cps.close();}
+			catch (SQLException e) {
+				// ...
+			}
+		}
+	}
+	
+	private static void safeClose(ResultSet crs) {
+		if (crs != null) {
+			try {	crs.close(); }
+			catch (SQLException e) {
+				// ...
+			}
+		}
+	}
+	
+	
+	private static final class ValueComparator implements Comparator<String> {
+
+	    Map<String, Double> base;
+	    public ValueComparator(Map<String, Double> base) {
+	        this.base = base;
+	    }
+    
+	    public int compare(String a, String b) {
+	        if (base.get(a) >= base.get(b)) {
+	            return -1;
+	        } else {
+	            return 1;
+	        } // returning 0 would merge keys
+	    }
+	}
+	
+	
+}//Query

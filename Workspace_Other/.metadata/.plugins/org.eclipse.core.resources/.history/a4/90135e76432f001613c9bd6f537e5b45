@@ -1,0 +1,839 @@
+package irsn;
+
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Scanner;
+import java.util.StringTokenizer;
+
+import org.apache.commons.lang3.StringUtils;
+import org.joda.time.*;
+
+
+
+public class DataImporter {
+
+	static Connection conn = null;
+	static StopWords sWord=new StopWords();
+	static PorterStemmer pWord=new PorterStemmer();
+	static SWN3 sentiwordnet = null;//new SWN3();
+	
+
+	public static void main(String[] args) throws Exception {
+			
+        Class.forName("com.mysql.jdbc.Driver");
+		conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/cs653","root", "");
+		
+		String delimiter = "\\*NewVideo*";
+		String delimiterStat = "NewVideo";
+		
+//		getTitleVid("data/familysearch.txt",delimiter);
+//		getStat("data/familysearchStat.txt",delimiterStat);
+//		//getCommentFiles("data/familysearchCom"); 
+//		insertCommentFiles("data/Senti/familysearchCom.txt");
+//		
+//		getTitleVid("data/ldsGenCon.txt",delimiter);
+//		getStat("data/ldsGenConStat.txt",delimiterStat);
+//		//getCommentFiles("data/ldsGenConCom"); 
+//		insertCommentFiles("data/Senti/ldsGenConCom.txt");
+//		
+//		getTitleVid("data/ldsPublicAffairs.txt",delimiter);
+//		getStat("data/ldsPublicAffairsStat.txt",delimiterStat);
+//		//getCommentFiles("data/ldsPublicAffairsCom");
+//		insertCommentFiles("data/Senti/ldsPublicAffairsCom.txt");
+//		
+//		
+//		getTitleVid("data/mormon.txt",delimiter);
+//		getStat("data/mormonStat.txt",delimiterStat);
+//		//getCommentFiles("data/mormonCom"); 
+//		insertCommentFiles("data/Senti/mormonCom.txt");
+//		
+//		
+//		getTitleVid("data/mormonMessage.txt",delimiter);
+//		getStat("data/mormonMessageStat.txt",delimiterStat);
+//		//getCommentFiles("data/mormonMessageCom"); 
+//		insertCommentFiles("data/Senti/mormonMessageCom.txt");
+//		
+//		
+//		getTitleVid("data/mormonTab.txt",delimiter);
+//		getStat("data/mormonTabStat.txt",delimiterStat);
+//		//getCommentFiles("data/mormonTabCom"); 
+//		insertCommentFiles("data/Senti/mormonTabCom.txt");
+//		
+//		NorViewCount();		
+//		NorPostDate();
+		
+		
+		parseStats("/Users/IrisSeaman/Documents/VSeek-Package/VSeek/src/data/familysearchStat.txt",delimiterStat);
+		parseStats("/Users/IrisSeaman/Documents/VSeek-Package/VSeek/src/data/ldsGenConStat.txt",delimiterStat);
+		parseStats("/Users/IrisSeaman/Documents/VSeek-Package/VSeek/src/data/ldsPublicAffairsStat.txt",delimiterStat);
+		parseStats("/Users/IrisSeaman/Documents/VSeek-Package/VSeek/src/data/mormonStat.txt",delimiterStat);
+		parseStats("/Users/IrisSeaman/Documents/VSeek-Package/VSeek/src/data/mormonMessageStat.txt",delimiterStat);
+		parseStats("/Users/IrisSeaman/Documents/VSeek-Package/VSeek/src/data/mormonTabStat.txt",delimiterStat);
+		
+		safeClose(conn);
+			
+	}//main()
+	
+private static void parseStats(String fileStat, String delimiterStat) throws Exception {
+		
+		StringTokenizer tokenizer;
+		String token=null;
+		
+		Scanner scanner = new Scanner(new FileInputStream(fileStat),"UTF-8").useDelimiter(delimiterStat);
+
+        while(scanner.hasNext()) {
+        	String line = scanner.next();
+        	tokenizer = new StringTokenizer(line,"^^");
+        	
+        	String[] getStr = new String[5];
+        	for(int i = 0; i< 5; i++)
+            {
+        		if(tokenizer.hasMoreTokens()) {
+        			getStr[i] = tokenizer.nextToken();
+        		}
+        		else {
+        			//System.out.println("here");
+        		}
+        		//System.out.println(getStr[i]);      		
+            }
+             
+        	/*for(int x=0; x<getTags.size();x++)
+        		System.out.println(getTags.get(x));*/
+            
+        	//System.out.println("--------------------------");
+            if(getStr[0] != null)
+            	upateLikeScore(getStr); 	
+        }   		
+
+        scanner.close();
+	}//parseStats()
+	
+	private static void upateLikeScore(String[] getStr) throws Exception {
+		
+		double like = Double.parseDouble(getStr[3]);
+		double dislike = Double.parseDouble(getStr[4]);
+		double likeScore = like - dislike;
+		
+		String [] sDate = getPostDate(getStr[1]);
+		
+		PreparedStatement stmtVideos = null;
+		
+		/*System.out.println("--update videos--");
+		System.out.println(Integer.parseInt(getStr[2]));
+		System.out.println(sDate[0]);
+		System.out.println(sDate[1]);
+		System.out.println(getStr[0]);*/
+		
+		try {
+			String query = "update videos set likeCount=? where vid = ?";
+			stmtVideos = conn.prepareStatement(query);
+			stmtVideos.setDouble(1, likeScore);
+			stmtVideos.setString(2, getStr[0]);
+	
+			stmtVideos.executeUpdate();
+				
+			
+		}
+		catch (Exception e) {
+			throw new Exception("Could not update videos", e);
+		}
+		finally {
+			safeClose(stmtVideos);
+		}	
+	}//upateLikeScore()
+
+	private static void NorPostDate() throws Exception {
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		LocalDate minDate= null,maxDate = null;
+		
+		try {
+			
+			String query = "select min(postDate) from videos";
+			stmt = conn.prepareStatement(query);
+			rs = stmt.executeQuery();
+			
+			while(rs.next())
+				minDate = new LocalDate(rs.getDate(1).toString());
+				
+				
+			String query2 = "select max(postDate) from videos";
+			stmt = conn.prepareStatement(query2);
+			rs = stmt.executeQuery();
+			
+			while(rs.next())
+				maxDate = LocalDate.parse(rs.getDate(1).toString());
+			
+		}
+		catch (Exception e) {
+			throw new Exception("Could not obtain max and min viewcount", e);
+		}		
+		finally {
+			safeClose(rs);
+			safeClose(stmt);
+		}
+		//System.out.println(maxDate.toString());
+		//System.out.println(minDate.toString());
+		
+		calNorPostDate(maxDate,minDate);
+		
+	}//NorViewCount()
+
+	private static void calNorPostDate(LocalDate maxDate, LocalDate minDate) throws Exception {
+		
+		PreparedStatement stmt = null;
+		PreparedStatement stmt2 = null;
+		ResultSet rs = null;
+		LocalDate vDate;
+		String vid=null;		
+		double calPd= Days.daysBetween(minDate, maxDate).getDays();
+		System.out.println("De: " +calPd);
+				
+		try {
+			
+			String query = "select vid, postDate from videos";
+			stmt = conn.prepareStatement(query);
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				vid = rs.getString(1);
+				if (rs.getDate(2)!= null){
+					vDate = LocalDate.parse(rs.getDate(2).toString());
+					double calDay = Days.daysBetween(minDate, vDate).getDays() / (calPd);
+					double roundDec= 10000000;
+					calDay = Math.round(calDay*roundDec);
+					calDay = calDay / roundDec;
+				
+				
+				//System.out.println(vid+":" +calDay);
+				//System.out.println(calPd);
+				String query2 = "update videos set nPostDate=? where vid = ?";
+				stmt2 = conn.prepareStatement(query2);
+				stmt2.setDouble(1,calDay );
+				stmt2.setString(2,vid);	
+				stmt2.executeUpdate(); 
+				}	
+			}
+		}
+		catch (Exception e) {
+			throw new Exception("Could not update viewcount", e);
+		}		
+		finally {
+			safeClose(rs);
+			safeClose(stmt);
+			safeClose(stmt2);
+		}
+		
+		//System.out.println("De: " +calPd);
+		
+	}//calNorViewCount()
+
+	
+	private static void NorViewCount() throws Exception {
+		
+		PreparedStatement stmt = null;
+		ResultSet rs = null;
+		double maxVC=0, minVC=0;
+		
+		try {
+			String query = "select min(viewCount) from videos";
+			stmt = conn.prepareStatement(query);
+			rs = stmt.executeQuery();
+			
+			while(rs.next())
+				minVC = rs.getDouble(1);
+				
+			String query2 = "select max(viewCount) from videos";
+			stmt = conn.prepareStatement(query2);
+			rs = stmt.executeQuery();
+			
+			while(rs.next())
+				maxVC = rs.getDouble(1);
+			
+			//System.out.println(maxVC);
+			//System.out.println(minVC);
+			
+		}
+		catch (Exception e) {
+			throw new Exception("Could not obtain max and min viewcount", e);
+		}		
+		finally {
+			safeClose(rs);
+			safeClose(stmt);
+		}
+		
+		calNorViewCount(maxVC,minVC);
+		
+	}//NorViewCount()
+
+	private static void calNorViewCount(double maxVC, double minVC) throws Exception {
+		
+		PreparedStatement stmt = null;
+		PreparedStatement stmt2 = null;
+		ResultSet rs = null;
+		String vid=null;
+		double VC=0;
+		
+		try {
+			
+			String query = "select vid, viewCount from videos";
+			stmt = conn.prepareStatement(query);
+			rs = stmt.executeQuery();
+			
+			while(rs.next()){
+				vid = rs.getString(1);
+				VC = rs.getDouble(2);
+			
+				double calVC = (VC-minVC) / (maxVC-minVC);
+				double roundDec= 10000000;
+				calVC = Math.round(calVC*roundDec);
+				calVC = calVC / roundDec;
+				
+				String query2 = "update videos set nViewCount=? where vid = ?";
+				stmt2 = conn.prepareStatement(query2);
+				stmt2.setDouble(1,calVC );
+				stmt2.setString(2,vid);	
+				stmt2.executeUpdate(); 
+			
+			}
+		}
+		catch (Exception e) {
+			throw new Exception("Could not update viewcount", e);
+		}		
+		finally {
+			safeClose(rs);
+			safeClose(stmt);
+			safeClose(stmt2);
+		}
+		
+		
+	}//calNorViewCount()
+
+	private static void insertCommentFiles(String path) throws Exception {
+		
+		Scanner scanner = new Scanner(new FileInputStream(path));
+		while(scanner.hasNext()) {
+        	String[] line = scanner.next().split(",");
+        	//System.out.println(line[0] +" : "+ line[1]);
+        	insertComDB(line[0], Double.parseDouble(line[1]));	
+		}	
+		scanner.close();	
+	}//insertCommentFiles()
+
+	private static void insertComDB(String vid, double senti) throws Exception {
+	
+		double sentiMap = getSentiMapping(senti);
+		//System.out.println(senti +":"+sentiMap);
+		PreparedStatement stmtSenti = null;
+		
+		try {
+			String query = "update videos set sentiCount=? where vid = ?";
+			stmtSenti = conn.prepareStatement(query);
+			stmtSenti.setDouble(1,sentiMap );
+			stmtSenti.setString(2,vid);	
+			stmtSenti.executeUpdate(); 							
+		}
+		catch (Exception e) {
+			throw new Exception("Could not insert sentiCount into videos", e);
+		}
+		finally {
+			safeClose(stmtSenti);
+		}		
+	}//insertComDB
+
+	private static double getSentiMapping(double senti) {
+		
+		if (senti >= -1 && senti <= -0.9) return 0.05;
+		else if (senti > -0.9 && senti <= -0.8) return 0.1;
+		else if (senti > -0.8 && senti <= -0.7) return 0.15;
+		else if (senti > -0.7 && senti <= -0.6) return 0.2;
+		else if (senti > -0.6 && senti <= -0.5) return 0.25;
+		else if (senti > -0.5 && senti <= -0.4) return 0.3;
+		else if (senti > -0.4 && senti <= -0.3) return 0.35;
+		else if (senti > -0.3 && senti <= -0.2) return 0.4;
+		else if (senti > -0.2 && senti <= -0.1) return 0.45;
+		else if (senti > -0.1 && senti <= 0) return 0.5;
+		else if (senti > 0 && senti <= 0.1) return 0.55;
+		else if (senti > 0.1 && senti <= 0.2) return 0.6;
+		else if (senti > 0.2 && senti <= 0.3) return 0.65;
+		else if (senti > 0.3 && senti <= 0.4) return 0.7;
+		else if (senti > 0.4 && senti <= 0.5) return 0.75;
+		else if (senti > 0.5 && senti <= 0.6) return 0.8;
+		else if (senti > 0.6 && senti <= 0.7) return 0.85;
+		else if (senti > 0.7 && senti <= 0.8) return 0.9;
+		else if (senti > 0.8 && senti <= 0.9) return 0.95;
+		else if (senti > 0.9 && senti <= 1) return 1;
+		
+		return 0.5;
+	
+	}//getSentiMapping
+
+	private static void getCommentFiles(String path) throws Exception {	
+			
+			Files.walk(Paths.get(path)).forEach(filePath -> {
+			    if (Files.isRegularFile(filePath)) {
+			    	
+			    	try {
+			    		String[] getVid = filePath.toString().split("/"); 
+				        //System.out.println(filePath +getVid[2].trim());
+						readComment(filePath.toString(),getVid[2].trim(),getVid[1].trim());
+					} catch (Exception e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+			    	
+			    	
+			    }
+			});	 
+	}//getCommentFiles()
+		
+		
+
+		private static void readComment(String path, String vid, String fileName) throws Exception {
+			
+			//System.out.println(path);
+			
+			StringTokenizer tokenizer;
+			String getWords = null;
+			double sentiCount =0.0;
+			int count=0;
+			
+			Scanner scanner = new Scanner(new FileInputStream(path));
+			while(scanner.hasNext()) {
+	        	String line = scanner.next();
+	        	tokenizer = new StringTokenizer(line," \t\n\r\f-,.:;?![]'");
+	        	while (tokenizer.hasMoreTokens() )
+	        	{	
+	        		getWords = tokenizer.nextToken().replaceAll("[^a-zA-Z ]", "").toLowerCase().trim();
+	        		if(StringUtils.isNumeric(getWords)){ System.out.println("Is numberic"); }
+	        		
+	        		else {
+	        			
+	          	    	if(!sWord.contains(getWords)){
+	        			//System.out.println(getWords);
+	          	    		double temp = getSentiNo(getWords);
+	          	    		if (temp!=0) {
+	          	    		count+=1;
+	          	    		sentiCount += temp;
+	          	    		//System.out.println(count+" : "+temp+" : "+sentiCount+ " : " + sentiCount/count);
+	          	    		}
+	          	    	}
+	        		}
+	        			      		
+	            }
+			}
+			
+			scanner.close();
+			
+			double norSenti = sentiCount/count;
+			if (Double.isNaN(norSenti))	
+				norSenti= 0;
+			//System.out.println(norSenti);
+			storeSentiFile(norSenti,vid, fileName);
+			
+		}//readComments()
+
+		
+		private static void storeSentiFile(double sentiCount, String vid, String fileName) throws Exception {
+			
+			PrintWriter writer = new PrintWriter(new FileOutputStream(new File("data/Senti/"+fileName+".txt"),true));
+			writer.println(vid+","+sentiCount);
+			writer.close();		
+		}//storeSentiFile()
+
+		
+		private static double getSentiNo(String getWords) throws IOException {
+			
+			return sentiwordnet.extract(getWords, "a");
+		 
+		}//getSentiNo()
+
+		
+		private static void getStat(String fileStat, String delimiterStat) throws Exception {
+		
+			StringTokenizer tokenizer;
+			String token=null;
+			
+			Scanner scanner = new Scanner(new FileInputStream(fileStat),"UTF-8").useDelimiter(delimiterStat);
+
+	        while(scanner.hasNext()) {
+	        	String line = scanner.next();
+	        	tokenizer = new StringTokenizer(line,"^^");
+	        	
+	        	int i=0;
+	        	String[] getStr = new String[5];
+	        	ArrayList<String> getTags = new ArrayList<> ();
+	        	while (tokenizer.hasMoreTokens() )
+	            {
+	        		if(i < 5){
+	        			getStr[i] = tokenizer.nextToken();
+	        			//System.out.println(getStr[i]); 
+	        			i++;
+	        		}
+	        		else
+	        			getTags.add(tokenizer.nextToken());        		
+	            }
+	             
+	        	/*for(int x=0; x<getTags.size();x++)
+	        		System.out.println(getTags.get(x));*/
+	            
+	        	//System.out.println("--------------------------");
+	            if(getStr[0] != null)
+	            	insertStat(getStr, getTags); 	
+	        }   		
+	
+	        scanner.close();
+	}//getStat()
+
+		private static void insertStat(String[] getStr, ArrayList<String> getTags) throws Exception {
+			
+			double getlikeCount = calLikeCount(Double.parseDouble(getStr[3]),Double.parseDouble(getStr[4]));
+			String [] sDate = getPostDate(getStr[1]);
+			
+			PreparedStatement stmtVideos = null;
+			PreparedStatement stmtStemTags = null;	
+			PreparedStatement stmtTags = null;
+			
+			/*System.out.println("--update videos--");
+			System.out.println(Integer.parseInt(getStr[2]));
+			System.out.println(sDate[0]);
+			System.out.println(sDate[1]);
+			System.out.println(getStr[0]);*/
+			
+			try {
+				String query = "update videos set viewCount=?, likeCount=?,postDate=?, postTime =? where vid = ?";
+				stmtVideos = conn.prepareStatement(query);
+				stmtVideos.setInt(1, Integer.parseInt(getStr[2]));
+				stmtVideos.setDouble(2, getlikeCount);
+				stmtVideos.setString(3, sDate[0]);
+				stmtVideos.setString(4, sDate[1]);
+				stmtVideos.setString(5,getStr[0]);
+		
+				if (stmtVideos.executeUpdate() == 1) {
+					
+					for(int i=0; i < getTags.size(); i++)
+					{
+						String tempTag = getTags.get(i).replaceAll("[^0-9a-zA-Z ]", "");
+						String []  getWord = tempTag.split(" ");
+						for(int x=0; x < getWord.length; x++)
+						{
+							String retRes = null;
+							String tag = null;
+							
+							if(StringUtils.isNumeric(getWord[x]))	{ 
+								retRes = getWord[x]; 
+								tag = getWord[x];
+								}
+			            	else	{ 
+			            		retRes = rStemStop(getWord[x]); 
+			            		tag = getWord[x];
+			            		}
+							
+							if(retRes != null){
+								
+								String query1 = "insert ignore into stemtags (vid,tag) values (?,?) ";
+								stmtStemTags = conn.prepareStatement(query1);
+								stmtStemTags.setString(1, getStr[0]);
+								stmtStemTags.setString(2, retRes.toLowerCase());
+								stmtStemTags.executeUpdate();
+								
+								//System.out.println("--insert stemtags--");
+								//System.out.println(getStr[0]);
+								//System.out.println(retRes.toLowerCase());
+								
+								String query2 = "insert ignore into tags (vid,tag) values (?,?) ";
+								stmtTags = conn.prepareStatement(query2);
+								stmtTags.setString(1, getStr[0]);
+								stmtTags.setString(2, tag.toLowerCase());
+								stmtTags.executeUpdate();
+								
+								//System.out.println("--insert tags--");
+								//System.out.println(getStr[0]);
+								//System.out.println(tag.toLowerCase());
+						}
+					  }						
+					}		
+				}
+				else {
+					throw new Exception("Could not insert semtags");
+				}
+			}
+			catch (Exception e) {
+				throw new Exception("Could not update videos", e);
+			}
+			finally {
+				safeClose(stmtVideos);
+				safeClose(stmtStemTags);
+			}	
+		}//insertStat()
+		
+
+		private static String[] getPostDate(String date) {
+			
+			String [] sDate = date.split("T");
+			int to = sDate[1].indexOf(".000Z");
+			sDate[1] = sDate[1].substring(0,to);
+			return sDate;
+		}//getPostDate()
+
+		private static double calLikeCount(double like, double dislike) {
+			double roundDec= 10000;
+			double calCount = like/(like+dislike);
+			calCount = Math.round(calCount*roundDec);
+			calCount = calCount / roundDec;
+			if (Double.isNaN(calCount))	return 0;
+				else return calCount;	
+		}//calLikeCount()
+		
+
+		private static void getTitleVid (String fileName, String delimiter) throws Exception{
+			
+			 //System.out.println("------GetTitleVid------");
+			StringTokenizer tokenizer;
+			String token=null;
+			
+			//FileReader fileReader = new FileReader(fileName);
+			
+			Scanner scanner = new Scanner(new FileInputStream(fileName),"UTF-8").useDelimiter(delimiter);
+			
+	        while(scanner.hasNext()) {
+	        	String line = scanner.next();
+	        	tokenizer = new StringTokenizer(line,"**");
+	        	
+	        	int i=0;
+	        	String[] getStr = new String[4];
+	        	while (tokenizer.hasMoreTokens() )
+	            {
+	        		getStr[i] = tokenizer.nextToken();
+	        		//System.out.println(getStr[i]); 
+	        		i++;
+	            }
+	             
+	            //System.out.println("--------------------------");
+	            if(getStr[0] != null) {
+	            	//insertTitleVid(getStr);
+	            	insertDescriptionOfVid(getStr);
+	            }
+	        	
+	        }   		
+	        
+	        scanner.close();
+		}//getTitleVid()
+	
+		
+		private static String getURL(String getStr) {
+			int from = getStr.indexOf("https");
+			int to = getStr.indexOf("jpg");
+			return getStr.substring(from, to+3);
+				
+		}//getURL()
+		
+		private static void insertDescriptionOfVid(String[] getStr) throws Exception {
+			
+		    String url= getURL(getStr[2]);
+			
+			PreparedStatement stmtVideos = null;
+			
+			//getStr[0] = getStr[0].replaceAll("[*?*]", "");
+			
+//			System.out.println("-------------------");
+//			System.out.println(getStr[0]);
+//			System.out.println(getStr[1]);
+//			System.out.println(getStr[2]);
+//			System.out.println(getStr[3]);
+			
+			if (getStr[3] != null) {
+				String description = getStr[3];
+				
+				//Take away all punctuation and numbers
+				//String description = getStr[3].replaceAll("[^0-9a-zA-Z ]", " ");
+				//Get rid of Extra spaces
+				//description = description.replaceAll("\\s+", " ").trim();
+				//description = RemoveStopWordsFromSentence(description);
+				
+				try {
+					String query2 = "update videos set description = ? where vid = ?";
+					stmtVideos = conn.prepareStatement(query2);
+					stmtVideos.setString(1,description );
+					stmtVideos.setString(2,getStr[1] );	
+					stmtVideos.executeUpdate(); 
+				}
+				catch (Exception e) {
+					throw new Exception("Could not insert videos", e);
+				}
+				finally {
+					safeClose(stmtVideos);
+				}
+			}
+			
+		}
+
+
+		private static void insertTitleVid(String[] getStr) throws Exception {
+			
+		    String url= getURL(getStr[2]);
+			
+			PreparedStatement stmtVideos = null;
+			PreparedStatement stmtStemTitle = null;	
+			
+			//getStr[0] = getStr[0].replaceAll("[*?*]", "");
+			
+			System.out.println("-------------------");
+			System.out.println(getStr[1]);
+			System.out.println(getStr[0]);
+			System.out.println(url);
+			
+			try {
+				String query = "insert into videos ( vid, title,thumburl) values (?,?,?)";
+				stmtVideos = conn.prepareStatement(query);
+				stmtVideos.setString(1, getStr[1]);
+				stmtVideos.setString(2, getStr[0]);
+				stmtVideos.setString(3, url);
+		
+				if (stmtVideos.executeUpdate() == 1) {
+					getStr[0] = getStr[0].replaceAll("[^0-9a-zA-Z ]", "");
+					String getRes[] = getStr[0].split(" ");
+					
+					for(int i=0; i < getRes.length; i++)
+					{
+						String retRes = null;
+						
+						if(StringUtils.isNumeric(getRes[i])){ retRes = getRes[i]; }
+		            	else{ retRes = rStemStop(getRes[i]); }
+						
+						if(retRes != null){
+							String query1 = "insert ignore into stemtitle (vid,title) values (?,?)";
+							stmtStemTitle = conn.prepareStatement(query1);
+							stmtStemTitle.setString(1, getStr[1]);
+							stmtStemTitle.setString(2, retRes.toLowerCase());
+							stmtStemTitle.executeUpdate();
+						}
+												
+					}
+									
+				}
+				else {
+					throw new Exception("Could not insert semtitle");
+				}
+			}
+			catch (Exception e) {
+				throw new Exception("Could not insert videos", e);
+			}
+			finally {
+				safeClose(stmtVideos);
+				safeClose(stmtStemTitle);
+			}
+			
+		}//insertTitleVid()
+		
+		private static String RemoveStopWordsFromSentence(String sent) {
+			List<String> nonStopWordsStemmed = new ArrayList<String>();
+			String allWords[] = sent.split(" ");
+			for(int i = 0; i < allWords.length; i++) {
+				String cleanString = rStemStop(allWords[i]);
+				if (cleanString != null) {
+					if (cleanString.length() >= 4 && !cleanString.substring(0, 4).equals("http")) {
+						nonStopWordsStemmed.add(cleanString);
+					}else if (cleanString.length() < 4 && !cleanString.equals("www")) {
+						nonStopWordsStemmed.add(cleanString);
+					}
+				}
+			}
+			StringBuilder stringToBuild = new StringBuilder();
+			
+			for(int i = 0; i < nonStopWordsStemmed.size(); i++)
+			{
+				stringToBuild.append(nonStopWordsStemmed.get(i));
+				if (i != nonStopWordsStemmed.size() -1) {
+					stringToBuild.append(" ");
+				}
+			}
+			
+			return stringToBuild.toString();
+		}
+
+		
+		private static String rStemStop(String getString) {
+		
+			String pStr= getString.toLowerCase();
+  	    	if(!sWord.contains(pStr))
+  	    	{
+  	        	pStr=pWord.stem(pStr);
+  	    		if(!pStr.contentEquals("Invalid term") && !pStr.contentEquals("No term entered"))
+  	    		{
+  	    			//System.out.println(pStr);
+  	    			return pStr;
+  	    		}
+  	    	}
+  	    	
+  	    	return null;
+  	}//rStemStop()
+		
+	
+		private static String rStop(String getString) {
+			
+			String pStr= getString.toLowerCase();
+  	    	if(!sWord.contains(pStr))
+  	    			return pStr;
+  	    	
+  	    	return null;
+  	}//rStemStop()
+	
+
+
+		
+		private static void safeClose(Connection con) {
+			if (con != null) {
+				try {con.close();}
+				catch (SQLException e) {
+					// ...
+				}
+			}
+		}
+		
+		private static void safeClose(Statement st) {
+			if (st != null) {
+				try {st.close();}
+				catch (SQLException e) {
+					// ...
+				}
+			}
+		}
+		
+		private static void safeClose (PreparedStatement cps) {
+			if (cps != null) {
+				try {cps.close();}
+				catch (SQLException e) {
+					// ...
+				}
+			}
+		}
+		
+		private static void safeClose(ResultSet crs) {
+			if (crs != null) {
+				try {crs.close();}
+				catch (SQLException e) {
+					// ...
+				}
+			}
+		}
+	
+	
+}// DataImporter
+
+
